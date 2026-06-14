@@ -66,7 +66,7 @@ def parse_docx(file_path: str) -> list[dict]:
 
 def parse_markdown(file_path: str) -> list[dict]:
     sections = []
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, "r", encoding="utf-8-sig") as f:
         content = f.read()
 
     current_section = ""
@@ -131,7 +131,10 @@ async def get_document_or_404(document_id: UUID, db: AsyncSession) -> Document:
 def extract_text_content(file_path: str, file_type: str) -> str:
     try:
         sections = parse_document(file_path, file_type)
-        return "\n\n".join(s["content"] for s in sections)
+        text = "\n\n".join(s["content"] for s in sections)
+        # Normalize line endings to LF and strip stray BOM/control chars
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        return text
     except Exception:
         return ""
 
@@ -154,24 +157,28 @@ async def save_version_snapshot(doc: Document, db: AsyncSession, change_summary:
 
 
 def compute_diff(text_a: str, text_b: str) -> list[dict]:
-    lines_a = text_a.splitlines(keepends=True)
-    lines_b = text_b.splitlines(keepends=True)
+    # Normalize both inputs to consistent LF line endings
+    text_a = (text_a or "").replace("\r\n", "\n").replace("\r", "\n")
+    text_b = (text_b or "").replace("\r\n", "\n").replace("\r", "\n")
+
+    lines_a = text_a.splitlines()
+    lines_b = text_b.splitlines()
 
     diff_result = []
     matcher = difflib.SequenceMatcher(None, lines_a, lines_b)
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             for idx, line in enumerate(lines_a[i1:i2]):
-                diff_result.append({"type": "context", "line": line.rstrip("\n"), "line_number": i1 + idx + 1})
+                diff_result.append({"type": "context", "line": line, "line_number": i1 + idx + 1})
         elif tag == "delete":
             for idx, line in enumerate(lines_a[i1:i2]):
-                diff_result.append({"type": "remove", "line": line.rstrip("\n"), "line_number": i1 + idx + 1})
+                diff_result.append({"type": "remove", "line": line, "line_number": i1 + idx + 1})
         elif tag == "insert":
             for idx, line in enumerate(lines_b[j1:j2]):
-                diff_result.append({"type": "add", "line": line.rstrip("\n"), "line_number": j1 + idx + 1})
+                diff_result.append({"type": "add", "line": line, "line_number": j1 + idx + 1})
         elif tag == "replace":
             for idx, line in enumerate(lines_a[i1:i2]):
-                diff_result.append({"type": "remove", "line": line.rstrip("\n"), "line_number": i1 + idx + 1})
+                diff_result.append({"type": "remove", "line": line, "line_number": i1 + idx + 1})
             for idx, line in enumerate(lines_b[j1:j2]):
-                diff_result.append({"type": "add", "line": line.rstrip("\n"), "line_number": j1 + idx + 1})
+                diff_result.append({"type": "add", "line": line, "line_number": j1 + idx + 1})
     return diff_result

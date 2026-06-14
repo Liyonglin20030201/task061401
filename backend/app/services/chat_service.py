@@ -165,6 +165,9 @@ async def load_conversation_history(
     limit: int = None,
     token_budget: int = None,
 ) -> list[dict]:
+    if not conversation_id:
+        return []
+
     if limit is None:
         limit = settings.conversation_history_limit
     if token_budget is None:
@@ -177,12 +180,16 @@ async def load_conversation_history(
         .limit(limit)
     )
     msgs = result.scalars().all()
+
+    if not msgs:
+        return []
+
     msgs.reverse()
 
     history = []
     used_tokens = 0
     for msg in msgs:
-        content = msg.corrected_content if msg.is_corrected else msg.content
+        content = msg.corrected_content if msg.is_corrected and msg.corrected_content else msg.content
         msg_tokens = count_tokens(content)
         if used_tokens + msg_tokens > token_budget:
             break

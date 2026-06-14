@@ -68,12 +68,14 @@ async def chat(
 
     # Get or create conversation
     conv = await get_or_create_conversation(user.id, data.kb_id, data.conversation_id, db)
-    await save_message(conv.id, "user", data.message, db=db)
 
-    # Load conversation history for multi-turn context
+    # Load conversation history BEFORE saving current message,
+    # otherwise the current question leaks into history context
     conversation_history = []
     if data.conversation_id:
         conversation_history = await load_conversation_history(conv.id, db)
+
+    await save_message(conv.id, "user", data.message, db=db)
 
     # Update conversation title from first message
     if conv.title == "New Conversation":
