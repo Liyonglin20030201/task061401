@@ -45,6 +45,7 @@ class User(Base):
     email = Column(String(128), unique=True, nullable=False, index=True)
     hashed_password = Column(String(256), nullable=False)
     role = Column(Enum(UserRole), default=UserRole.viewer, nullable=False)
+    department = Column(String(64), nullable=True, default=None)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -59,6 +60,7 @@ class KnowledgeBase(Base):
     name = Column(String(128), nullable=False)
     description = Column(Text, default="")
     access_level = Column(Enum(AccessLevel), default=AccessLevel.internal, nullable=False)
+    departments = Column(JSONB, default=[])
     owner_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 

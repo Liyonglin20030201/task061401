@@ -1,3 +1,4 @@
+import hashlib
 import json
 from typing import AsyncGenerator, Optional
 from uuid import UUID
@@ -7,9 +8,10 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
+from app.core.cache import kb_access_cache, query_cache
 from app.models import (
     DocumentChunk, Document, Conversation, Message,
-    KnowledgeBase, KBAccess, User, AccessLevel, KBPermission
+    KnowledgeBase, KBAccess, User, UserRole, AccessLevel, KBPermission
 )
 from app.services.embedding_service import generate_single_embedding
 from app.core.exceptions import ForbiddenException, NotFoundException
@@ -27,19 +29,33 @@ SYSTEM_PROMPT = """You are a customer service knowledge base assistant. You MUST
 
 
 async def check_kb_access(user: User, kb_id: UUID, db: AsyncSession) -> bool:
+    cache_key = f"{user.id}:{kb_id}"
+    cached = kb_access_cache.get(cache_key)
+    if cached is True:
+        return True
+
     result = await db.execute(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
     kb = result.scalar_one_or_none()
     if not kb:
         raise NotFoundException("Knowledge base not found")
 
+    # Department filter: if KB has departments set, user must belong to one
+    if kb.departments and user.department not in kb.departments:
+        if user.role != UserRole.admin:
+            raise ForbiddenException("Your department does not have access to this knowledge base")
+
     if kb.access_level == AccessLevel.public:
+        kb_access_cache.set(cache_key, True)
         return True
     if kb.access_level == AccessLevel.internal and user:
+        kb_access_cache.set(cache_key, True)
         return True
     if kb.access_level == AccessLevel.restricted:
-        if user.role.value == "admin":
+        if user.role == UserRole.admin:
+            kb_access_cache.set(cache_key, True)
             return True
         if kb.owner_id == user.id:
+            kb_access_cache.set(cache_key, True)
             return True
         access = await db.execute(
             select(KBAccess).where(
@@ -48,6 +64,7 @@ async def check_kb_access(user: User, kb_id: UUID, db: AsyncSession) -> bool:
             )
         )
         if access.scalar_one_or_none():
+            kb_access_cache.set(cache_key, True)
             return True
 
     raise ForbiddenException("You do not have access to this knowledge base")
@@ -57,10 +74,18 @@ async def vector_search(
     query_embedding: list[float],
     kb_id: UUID,
     db: AsyncSession,
+    user_department: str = None,
     top_k: int = None,
 ) -> list[dict]:
     if top_k is None:
         top_k = settings.max_retrieval_count
+
+    # Cache lookup: hash the embedding to create a stable key
+    emb_hash = hashlib.md5(str(query_embedding[:8]).encode()).hexdigest()[:12]
+    cache_key = f"{kb_id}:{emb_hash}:{user_department}"
+    cached = query_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     embedding_str = "[" + ",".join(str(x) for x in query_embedding) + "]"
 
@@ -70,7 +95,13 @@ async def vector_search(
                1 - (dc.embedding <=> :embedding::vector) as similarity
         FROM document_chunks dc
         JOIN documents d ON d.id = dc.document_id
-        WHERE d.kb_id = :kb_id AND d.status = 'ready'
+        JOIN knowledge_bases kb ON kb.id = d.kb_id
+        WHERE d.kb_id = :kb_id
+          AND d.status = 'ready'
+          AND (
+            kb.departments = '[]'::jsonb
+            OR kb.departments @> to_jsonb(:user_department::text)
+          )
         ORDER BY dc.embedding <=> :embedding::vector
         LIMIT :top_k
     """)
@@ -78,11 +109,12 @@ async def vector_search(
     result = await db.execute(sql, {
         "embedding": embedding_str,
         "kb_id": str(kb_id),
+        "user_department": user_department or "",
         "top_k": top_k,
     })
 
     rows = result.fetchall()
-    return [
+    results = [
         {
             "chunk_id": str(row.id),
             "content": row.content,
@@ -94,6 +126,8 @@ async def vector_search(
         }
         for row in rows
     ]
+    query_cache.set(cache_key, results)
+    return results
 
 
 def build_rag_prompt(question: str, context_chunks: list[dict]) -> list[dict]:

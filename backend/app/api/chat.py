@@ -41,7 +41,7 @@ async def chat(
     query_embedding = await generate_single_embedding(data.message)
 
     # Vector search
-    results = await vector_search(query_embedding, data.kb_id, db)
+    results = await vector_search(query_embedding, data.kb_id, db, user_department=user.department)
 
     # Check confidence threshold
     if not results or results[0]["similarity"] < settings.similarity_threshold:

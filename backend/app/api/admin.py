@@ -63,6 +63,22 @@ async def update_user_status(
     return {"status": "updated", "is_active": is_active}
 
 
+@router.put("/users/{user_id}/department")
+async def update_user_department(
+    user_id: UUID,
+    department: str,
+    user: User = Depends(require_role(UserRole.admin)),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(User).where(User.id == user_id))
+    target = result.scalar_one_or_none()
+    if not target:
+        raise NotFoundException("User not found")
+    target.department = department
+    await db.flush()
+    return {"status": "updated", "department": department}
+
+
 # ===== Sensitive Words =====
 
 @router.get("/config/sensitive-words", response_model=list[SensitiveWordOut])

@@ -1,6 +1,4 @@
 import hashlib
-import os
-import shutil
 from pathlib import Path
 from uuid import UUID
 
@@ -10,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import Document, DocumentChunk, DocStatus
+from app.models import Document, DocStatus
 from app.core.exceptions import NotFoundException
 
 settings = get_settings()
@@ -116,14 +114,6 @@ async def save_uploaded_file(file_content: bytes, filename: str, kb_id: UUID) ->
 
     return str(file_path)
 
-
-async def delete_document_chunks(document_id: UUID, db: AsyncSession):
-    result = await db.execute(
-        select(DocumentChunk).where(DocumentChunk.document_id == document_id)
-    )
-    chunks = result.scalars().all()
-    for chunk in chunks:
-        await db.delete(chunk)
 
 
 async def get_document_or_404(document_id: UUID, db: AsyncSession) -> Document:

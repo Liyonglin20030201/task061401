@@ -1,3 +1,5 @@
+import re
+
 import tiktoken
 
 from app.config import get_settings
@@ -6,99 +8,133 @@ settings = get_settings()
 
 encoding = tiktoken.encoding_for_model("gpt-4")
 
+HEADING_PATTERNS = [
+    (r'^# ', 1),
+    (r'^## ', 2),
+    (r'^### ', 3),
+    (r'^#### ', 4),
+]
+
 
 def count_tokens(text: str) -> int:
     return len(encoding.encode(text))
 
 
-def chunk_text(
-    sections: list[dict],
-    chunk_size: int = None,
-    chunk_overlap: int = None,
+def recursive_heading_chunk(
+    text: str,
+    metadata: dict,
+    chunk_size: int,
+    chunk_overlap: int,
+    heading_level: int = 0,
 ) -> list[dict]:
-    if chunk_size is None:
-        chunk_size = settings.chunk_size
-    if chunk_overlap is None:
-        chunk_overlap = settings.chunk_overlap
+    token_count = count_tokens(text)
+    if token_count <= chunk_size:
+        return [{"content": text, "token_count": token_count, "metadata": metadata}]
+
+    # Try splitting by next heading level
+    if heading_level < len(HEADING_PATTERNS):
+        pattern, level = HEADING_PATTERNS[heading_level]
+        sections = re.split(f'(?m)(?={pattern})', text)
+        sections = [s for s in sections if s.strip()]
+
+        if len(sections) > 1:
+            chunks = []
+            for section in sections:
+                heading_match = re.match(pattern, section, re.MULTILINE)
+                section_heading = heading_match.group(0).strip().lstrip("#").strip() if heading_match else ""
+                sub_meta = {**metadata, f"h{level}": section_heading}
+                chunks.extend(recursive_heading_chunk(
+                    section, sub_meta, chunk_size, chunk_overlap, heading_level + 1
+                ))
+            return chunks
+
+        return recursive_heading_chunk(text, metadata, chunk_size, chunk_overlap, heading_level + 1)
+
+    # Fallback: split by paragraphs
+    paragraphs = text.split("\n\n")
+    if len(paragraphs) > 1:
+        chunks = []
+        current = ""
+        for para in paragraphs:
+            candidate = current + "\n\n" + para if current else para
+            if count_tokens(candidate) <= chunk_size:
+                current = candidate
+            else:
+                if current:
+                    chunks.append({"content": current, "token_count": count_tokens(current), "metadata": metadata})
+                current = para
+        if current:
+            chunks.append({"content": current, "token_count": count_tokens(current), "metadata": metadata})
+
+        final = []
+        for c in chunks:
+            if c["token_count"] > chunk_size:
+                final.extend(sentence_boundary_split(c["content"], metadata, chunk_size, chunk_overlap))
+            else:
+                final.append(c)
+        return final
+
+    # Last resort: sentence-boundary-aware split
+    return sentence_boundary_split(text, metadata, chunk_size, chunk_overlap)
+
+
+def sentence_boundary_split(
+    text: str,
+    metadata: dict,
+    chunk_size: int,
+    chunk_overlap: int,
+) -> list[dict]:
+    sentences = re.split(r'(?<=[。！？.!?\n])', text)
+    sentences = [s for s in sentences if s.strip()]
 
     chunks = []
-
-    for section in sections:
-        content = section["content"]
-        metadata = section.get("metadata", {})
-        tokens = encoding.encode(content)
-
-        if len(tokens) <= chunk_size:
-            chunks.append({
-                "content": content,
-                "token_count": len(tokens),
-                "metadata": metadata,
-            })
+    current = ""
+    for sent in sentences:
+        candidate = current + sent
+        if count_tokens(candidate) <= chunk_size:
+            current = candidate
         else:
-            # Sliding window chunking with overlap
-            start = 0
-            while start < len(tokens):
-                end = min(start + chunk_size, len(tokens))
-                chunk_tokens = tokens[start:end]
-                chunk_text_decoded = encoding.decode(chunk_tokens)
+            if current:
+                chunks.append({"content": current, "token_count": count_tokens(current), "metadata": metadata})
+            current = sent
+    if current:
+        chunks.append({"content": current, "token_count": count_tokens(current), "metadata": metadata})
 
-                chunks.append({
-                    "content": chunk_text_decoded,
-                    "token_count": len(chunk_tokens),
-                    "metadata": {**metadata, "chunk_part": f"{start//chunk_size + 1}"},
-                })
-
-                if end >= len(tokens):
-                    break
-                start += chunk_size - chunk_overlap
+    # Add overlap by prepending tail of previous chunk
+    if chunk_overlap > 0 and len(chunks) > 1:
+        for i in range(1, len(chunks)):
+            prev_tokens = encoding.encode(chunks[i - 1]["content"])
+            overlap_tokens = prev_tokens[-chunk_overlap:]
+            overlap_text = encoding.decode(overlap_tokens)
+            chunks[i]["content"] = overlap_text + chunks[i]["content"]
+            chunks[i]["token_count"] = count_tokens(chunks[i]["content"])
 
     return chunks
 
 
 def smart_chunk(sections: list[dict]) -> list[dict]:
-    """
-    Hybrid chunking strategy:
-    1. Respect structural boundaries (sections from parsing)
-    2. Split oversized sections with sliding window + overlap
-    3. Preserve table integrity (don't split tables)
-    """
-    processed_sections = []
+    all_chunks = []
+    chunk_size = settings.chunk_size
+    chunk_overlap = settings.chunk_overlap
 
     for section in sections:
         content = section["content"]
         metadata = section.get("metadata", {})
 
-        # Detect tables (simple heuristic: lines with | separators)
+        # Table detection — keep tables whole
         lines = content.split("\n")
         table_lines = [l for l in lines if "|" in l and l.strip().startswith("|")]
-
         if len(table_lines) > 2 and len(table_lines) / max(len(lines), 1) > 0.5:
-            # This section is primarily a table — keep it whole
-            processed_sections.append({
+            token_count = count_tokens(content)
+            all_chunks.append({
                 "content": content,
+                "token_count": token_count,
                 "metadata": {**metadata, "type": "table"},
             })
-        else:
-            # Split by paragraph boundaries first
-            paragraphs = content.split("\n\n")
-            current_group = ""
+            continue
 
-            for para in paragraphs:
-                test_group = current_group + "\n\n" + para if current_group else para
-                if count_tokens(test_group) <= settings.chunk_size:
-                    current_group = test_group
-                else:
-                    if current_group:
-                        processed_sections.append({
-                            "content": current_group,
-                            "metadata": metadata,
-                        })
-                    current_group = para
+        all_chunks.extend(
+            recursive_heading_chunk(content, metadata, chunk_size, chunk_overlap)
+        )
 
-            if current_group:
-                processed_sections.append({
-                    "content": current_group,
-                    "metadata": metadata,
-                })
-
-    return chunk_text(processed_sections)
+    return all_chunks

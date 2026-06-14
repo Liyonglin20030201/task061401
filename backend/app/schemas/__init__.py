@@ -11,6 +11,7 @@ class UserRegister(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     email: EmailStr
     password: str = Field(min_length=6, max_length=128)
+    department: Optional[str] = None
 
 
 class UserLogin(BaseModel):
@@ -33,6 +34,7 @@ class UserOut(BaseModel):
     username: str
     email: str
     role: str
+    department: Optional[str] = None
     is_active: bool
     created_at: datetime
 
@@ -43,6 +45,7 @@ class UserOut(BaseModel):
 class UserUpdate(BaseModel):
     username: Optional[str] = None
     email: Optional[EmailStr] = None
+    department: Optional[str] = None
 
 
 # ===== Knowledge Base Schemas =====
@@ -51,12 +54,14 @@ class KBCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str = ""
     access_level: str = "internal"
+    departments: list[str] = []
 
 
 class KBUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     access_level: Optional[str] = None
+    departments: Optional[list[str]] = None
 
 
 class KBOut(BaseModel):
@@ -64,6 +69,7 @@ class KBOut(BaseModel):
     name: str
     description: str
     access_level: str
+    departments: list[str] = []
     owner_id: UUID
     created_at: datetime
 

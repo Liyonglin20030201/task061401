@@ -1,8 +1,8 @@
-import asyncio
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, UploadFile, File, Form, Query, BackgroundTasks
-from sqlalchemy import select
+from sqlalchemy import select, cast, or_
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -14,6 +14,7 @@ from app.schemas import (
     KBCreate, KBUpdate, KBOut, KBAccessGrant,
     DocumentOut, ChunkOut
 )
+from app.core.cache import kb_access_cache
 from app.services.document_service import save_uploaded_file, compute_file_hash, get_document_or_404
 from app.services.chat_service import check_kb_access
 from app.tasks.indexing import process_document
@@ -33,8 +34,14 @@ async def list_knowledge_bases(
     if user.role == UserRole.admin:
         result = await db.execute(select(KnowledgeBase))
     else:
+        dept_filter = or_(
+            KnowledgeBase.departments == cast([], JSONB),
+            KnowledgeBase.departments.contains(cast([user.department], JSONB))
+        ) if user.department else (KnowledgeBase.departments == cast([], JSONB))
+
         result = await db.execute(
             select(KnowledgeBase).where(
+                dept_filter,
                 (KnowledgeBase.access_level == AccessLevel.public) |
                 (KnowledgeBase.access_level == AccessLevel.internal) |
                 (KnowledgeBase.owner_id == user.id) |
@@ -56,6 +63,7 @@ async def create_knowledge_base(
         name=data.name,
         description=data.description,
         access_level=AccessLevel(data.access_level),
+        departments=data.departments,
         owner_id=user.id,
     )
     db.add(kb)
@@ -83,6 +91,8 @@ async def update_knowledge_base(
         kb.description = data.description
     if data.access_level:
         kb.access_level = AccessLevel(data.access_level)
+    if data.departments is not None:
+        kb.departments = data.departments
     await db.flush()
     return kb
 
@@ -114,6 +124,7 @@ async def grant_kb_access(
     )
     db.add(access)
     await db.flush()
+    kb_access_cache.invalidate(f"{data.user_id}:{kb_id}")
     return {"status": "granted"}
 
 
@@ -130,6 +141,7 @@ async def revoke_kb_access(
     access = result.scalar_one_or_none()
     if access:
         await db.delete(access)
+        kb_access_cache.invalidate(f"{user_id}:{kb_id}")
 
 
 # ===== Document Routes =====
@@ -210,7 +222,7 @@ async def update_document(
         doc.file_hash = new_hash
         doc.version += 1
         doc.status = DocStatus.pending
-        await db.flush()
+        await db.commit()
         background_tasks.add_task(process_document, doc.id)
 
     return doc
