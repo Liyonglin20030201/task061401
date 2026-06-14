@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     similarity_threshold: float = 0.75
     max_retrieval_count: int = 5
 
+    # Conversation Memory
+    conversation_history_limit: int = 10
+    history_token_budget: int = 2048
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

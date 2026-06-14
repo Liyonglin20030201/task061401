@@ -3,7 +3,8 @@ from datetime import datetime
 from enum import Enum as PyEnum
 
 from sqlalchemy import (
-    Column, String, Boolean, DateTime, Integer, Text, ForeignKey, Enum, SmallInteger
+    Column, String, Boolean, DateTime, Integer, Text, ForeignKey,
+    Enum, SmallInteger, Float, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from pgvector.sqlalchemy import Vector
@@ -86,6 +87,8 @@ class Document(Base):
 
     knowledge_base = relationship("KnowledgeBase", back_populates="documents")
     chunks = relationship("DocumentChunk", back_populates="document", cascade="all, delete-orphan")
+    versions = relationship("DocumentVersion", back_populates="document", cascade="all, delete-orphan", order_by="DocumentVersion.version_number.desc()")
+    summary_embedding = relationship("DocumentEmbedding", back_populates="document", uselist=False, cascade="all, delete-orphan")
 
 
 class DocumentChunk(Base):
@@ -127,6 +130,7 @@ class Message(Base):
     citations = Column(JSONB, default=[])
     is_corrected = Column(Boolean, default=False)
     corrected_content = Column(Text, nullable=True)
+    confidence_score = Column(Float, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     conversation = relationship("Conversation", back_populates="messages")
@@ -172,3 +176,48 @@ class KBAccess(Base):
     permission = Column(Enum(KBPermission), default=KBPermission.read, nullable=False)
 
     knowledge_base = relationship("KnowledgeBase", back_populates="access_grants")
+
+
+class DocumentVersion(Base):
+    __tablename__ = "document_versions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
+    version_number = Column(Integer, nullable=False)
+    file_path = Column(String(512), nullable=False)
+    file_hash = Column(String(64), nullable=False)
+    content_snapshot = Column(Text, nullable=True)
+    change_summary = Column(Text, default="")
+    uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("document_id", "version_number", name="uq_doc_version"),
+    )
+
+    document = relationship("Document", back_populates="versions")
+
+
+class DocumentEmbedding(Base):
+    __tablename__ = "document_embeddings"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, unique=True)
+    embedding = Column(Vector(1536), nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    document = relationship("Document", back_populates="summary_embedding")
+
+
+class QuestionCluster(Base):
+    __tablename__ = "question_clusters"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    kb_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_bases.id"), nullable=True)
+    representative_question = Column(Text, nullable=False)
+    question_count = Column(Integer, default=1)
+    centroid_embedding = Column(Vector(1536), nullable=True)
+    avg_rating = Column(Float, nullable=True)
+    avg_confidence = Column(Float, nullable=True)
+    last_asked_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=datetime.utcnow)

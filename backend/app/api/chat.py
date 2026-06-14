@@ -11,7 +11,7 @@ from app.models import User, Conversation, Message
 from app.schemas import ChatRequest, ConversationOut, MessageOut, CorrectionRequest
 from app.services.chat_service import (
     check_kb_access, vector_search, stream_chat_response,
-    get_or_create_conversation, save_message,
+    get_or_create_conversation, save_message, load_conversation_history,
 )
 from app.services.embedding_service import generate_single_embedding
 from app.services.sensitive_filter import sensitive_filter
@@ -49,7 +49,8 @@ async def chat(
         conv = await get_or_create_conversation(user.id, data.kb_id, data.conversation_id, db)
         await save_message(conv.id, "user", data.message, db=db)
         no_info_msg = "抱歉，知识库中未找到与您问题相关的信息，无法为您提供准确回答。"
-        await save_message(conv.id, "assistant", no_info_msg, citations=[], db=db)
+        msg = await save_message(conv.id, "assistant", no_info_msg, citations=[], db=db)
+        msg.confidence_score = results[0]["similarity"] if results else 0.0
         await db.commit()
         return {"message": no_info_msg, "citations": [], "conversation_id": str(conv.id)}
 
@@ -69,21 +70,30 @@ async def chat(
     conv = await get_or_create_conversation(user.id, data.kb_id, data.conversation_id, db)
     await save_message(conv.id, "user", data.message, db=db)
 
+    # Load conversation history for multi-turn context
+    conversation_history = []
+    if data.conversation_id:
+        conversation_history = await load_conversation_history(conv.id, db)
+
     # Update conversation title from first message
     if conv.title == "New Conversation":
         conv.title = data.message[:50]
 
+    # Best confidence score for analytics
+    best_confidence = results[0]["similarity"] if results else None
+
     # Stream response via SSE
     async def event_stream():
         full_response = ""
-        async for token in stream_chat_response(data.message, results):
+        async for token in stream_chat_response(data.message, results, conversation_history):
             # Filter output sensitive words
             masked = sensitive_filter.mask_sensitive(token)
             full_response += masked
             yield f"data: {json.dumps({'token': masked})}\n\n"
 
-        # Save complete message
-        await save_message(conv.id, "assistant", full_response, citations=citations, db=db)
+        # Save complete message with confidence score
+        msg = await save_message(conv.id, "assistant", full_response, citations=citations, db=db)
+        msg.confidence_score = best_confidence
         await db.commit()
 
         # Send final event with metadata
@@ -143,6 +153,29 @@ async def delete_conversation(
     if not conv:
         raise NotFoundException("Conversation not found")
     await db.delete(conv)
+
+
+@router.get("/recommendations")
+async def chat_recommendations(
+    conversation_id: UUID = Query(...),
+    top_k: int = Query(5, ge=1, le=20),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Conversation).where(
+            Conversation.id == conversation_id, Conversation.user_id == user.id
+        )
+    )
+    conv = result.scalar_one_or_none()
+    if not conv:
+        raise NotFoundException("Conversation not found")
+
+    from app.api.documents import get_user_accessible_kb_ids
+    accessible_kbs = await get_user_accessible_kb_ids(user, db)
+
+    from app.services.recommendation_service import get_conversation_recommendations
+    return await get_conversation_recommendations(conversation_id, db, accessible_kbs, top_k)
 
 
 @router.put("/messages/{msg_id}/correct", response_model=MessageOut)

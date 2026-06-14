@@ -14,6 +14,7 @@ from app.models import (
     KnowledgeBase, KBAccess, User, UserRole, AccessLevel, KBPermission
 )
 from app.services.embedding_service import generate_single_embedding
+from app.services.chunking_service import count_tokens
 from app.core.exceptions import ForbiddenException, NotFoundException
 
 settings = get_settings()
@@ -25,7 +26,9 @@ SYSTEM_PROMPT = """You are a customer service knowledge base assistant. You MUST
 3. Always cite your sources using [1], [2], etc. format, corresponding to the numbered context sections.
 4. Be concise and accurate. Do not elaborate beyond what the context supports.
 5. If a question is ambiguous, ask for clarification rather than guessing.
-6. Respond in the same language as the user's question."""
+6. Respond in the same language as the user's question.
+7. When previous conversation messages are provided, use them to understand follow-up questions, resolve pronouns, and maintain context continuity.
+8. If the user refers to something discussed earlier in the conversation, use that context alongside the retrieved documents."""
 
 
 async def check_kb_access(user: User, kb_id: UUID, db: AsyncSession) -> bool:
@@ -130,7 +133,11 @@ async def vector_search(
     return results
 
 
-def build_rag_prompt(question: str, context_chunks: list[dict]) -> list[dict]:
+def build_rag_prompt(
+    question: str,
+    context_chunks: list[dict],
+    conversation_history: list[dict] = None,
+) -> list[dict]:
     context_parts = []
     for i, chunk in enumerate(context_chunks, 1):
         source_info = f"[Source: {chunk['doc_title']}"
@@ -141,19 +148,57 @@ def build_rag_prompt(question: str, context_chunks: list[dict]) -> list[dict]:
 
     context_text = "\n\n---\n\n".join(context_parts)
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Context:\n{context_text}\n\n---\n\nQuestion: {question}"},
-    ]
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    if conversation_history:
+        messages.extend(conversation_history)
+
+    messages.append(
+        {"role": "user", "content": f"Context:\n{context_text}\n\n---\n\nQuestion: {question}"}
+    )
     return messages
+
+
+async def load_conversation_history(
+    conversation_id: UUID,
+    db: AsyncSession,
+    limit: int = None,
+    token_budget: int = None,
+) -> list[dict]:
+    if limit is None:
+        limit = settings.conversation_history_limit
+    if token_budget is None:
+        token_budget = settings.history_token_budget
+
+    result = await db.execute(
+        select(Message)
+        .where(Message.conversation_id == conversation_id)
+        .order_by(Message.created_at.desc())
+        .limit(limit)
+    )
+    msgs = result.scalars().all()
+    msgs.reverse()
+
+    history = []
+    used_tokens = 0
+    for msg in msgs:
+        content = msg.corrected_content if msg.is_corrected else msg.content
+        msg_tokens = count_tokens(content)
+        if used_tokens + msg_tokens > token_budget:
+            break
+        history.append({"role": msg.role, "content": content})
+        used_tokens += msg_tokens
+
+    return history
 
 
 async def stream_chat_response(
     question: str,
     context_chunks: list[dict],
+    conversation_history: list[dict] = None,
 ) -> AsyncGenerator[str, None]:
     client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
-    messages = build_rag_prompt(question, context_chunks)
+    messages = build_rag_prompt(question, context_chunks, conversation_history)
 
     stream = await client.chat.completions.create(
         model=settings.openai_chat_model,

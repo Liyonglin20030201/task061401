@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import get_settings
 from app.database import engine, async_session_factory
 from app.services.sensitive_filter import sensitive_filter
-from app.api import auth, documents, chat, feedback, admin
+from app.api import auth, documents, chat, feedback, admin, analytics
 
 settings = get_settings()
 
@@ -42,6 +42,7 @@ app.include_router(documents.router)
 app.include_router(chat.router)
 app.include_router(feedback.router)
 app.include_router(admin.router)
+app.include_router(analytics.router)
 
 
 @app.get("/api/health")

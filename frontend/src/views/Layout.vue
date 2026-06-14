@@ -13,6 +13,10 @@
           <el-icon><Document /></el-icon>
           <span>文档管理</span>
         </el-menu-item>
+        <el-menu-item v-if="auth.user?.role === 'admin'" index="/analytics">
+          <el-icon><DataAnalysis /></el-icon>
+          <span>数据分析</span>
+        </el-menu-item>
         <el-menu-item v-if="auth.user?.role === 'admin'" index="/admin">
           <el-icon><Setting /></el-icon>
           <span>系统管理</span>
@@ -35,7 +39,7 @@
 import { computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { ChatDotRound, Document, Setting } from '@element-plus/icons-vue'
+import { ChatDotRound, Document, Setting, DataAnalysis } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()

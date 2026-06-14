@@ -28,6 +28,12 @@ const routes = [
         component: () => import('../views/Documents.vue'),
       },
       {
+        path: 'analytics',
+        name: 'Analytics',
+        component: () => import('../views/Analytics.vue'),
+        meta: { requiresAdmin: true },
+      },
+      {
         path: 'admin',
         name: 'Admin',
         component: () => import('../views/Admin.vue'),

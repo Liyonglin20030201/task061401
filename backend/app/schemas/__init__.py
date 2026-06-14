@@ -210,3 +210,73 @@ class DashboardStats(BaseModel):
     total_messages: int
     avg_rating: float
     documents_by_status: dict
+
+
+# ===== Document Version Schemas =====
+
+class DocumentVersionOut(BaseModel):
+    id: UUID
+    document_id: UUID
+    version_number: int
+    file_hash: str
+    change_summary: str
+    uploaded_by: UUID
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class DocumentDiffOut(BaseModel):
+    version_from: int
+    version_to: int
+    diff_lines: list[dict]
+
+
+class DocumentRollbackRequest(BaseModel):
+    target_version: int
+
+
+# ===== Recommendation Schemas =====
+
+class RecommendationOut(BaseModel):
+    document_id: UUID
+    title: str
+    similarity: float
+    kb_name: str
+
+
+# ===== Analytics Schemas =====
+
+class TopQuestionOut(BaseModel):
+    representative_question: str
+    question_count: int
+    avg_rating: Optional[float] = None
+    avg_confidence: Optional[float] = None
+    last_asked_at: datetime
+
+
+class SatisfactionTrendPoint(BaseModel):
+    date: str
+    avg_rating: float
+    total_feedback: int
+
+
+class SatisfactionTrendOut(BaseModel):
+    data: list[SatisfactionTrendPoint]
+
+
+class KnowledgeGapOut(BaseModel):
+    question: str
+    confidence_score: float
+    avg_rating: Optional[float] = None
+    occurrence_count: int
+    last_asked_at: datetime
+
+
+class AnalyticsAccuracyOut(BaseModel):
+    total_questions: int
+    high_confidence_count: int
+    low_confidence_count: int
+    avg_confidence: float
+    confidence_over_time: list[dict]

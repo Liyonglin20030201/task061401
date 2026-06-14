@@ -1,3 +1,4 @@
+import difflib
 import hashlib
 from pathlib import Path
 from uuid import UUID
@@ -8,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.models import Document, DocStatus
+from app.models import Document, DocumentVersion, DocStatus
 from app.core.exceptions import NotFoundException
 
 settings = get_settings()
@@ -125,3 +126,52 @@ async def get_document_or_404(document_id: UUID, db: AsyncSession) -> Document:
     if not doc:
         raise NotFoundException("Document not found")
     return doc
+
+
+def extract_text_content(file_path: str, file_type: str) -> str:
+    try:
+        sections = parse_document(file_path, file_type)
+        return "\n\n".join(s["content"] for s in sections)
+    except Exception:
+        return ""
+
+
+async def save_version_snapshot(doc: Document, db: AsyncSession, change_summary: str = "") -> DocumentVersion:
+    content_snapshot = extract_text_content(doc.file_path, doc.file_type)
+
+    version = DocumentVersion(
+        document_id=doc.id,
+        version_number=doc.version,
+        file_path=doc.file_path,
+        file_hash=doc.file_hash,
+        content_snapshot=content_snapshot,
+        change_summary=change_summary,
+        uploaded_by=doc.uploaded_by,
+    )
+    db.add(version)
+    await db.flush()
+    return version
+
+
+def compute_diff(text_a: str, text_b: str) -> list[dict]:
+    lines_a = text_a.splitlines(keepends=True)
+    lines_b = text_b.splitlines(keepends=True)
+
+    diff_result = []
+    matcher = difflib.SequenceMatcher(None, lines_a, lines_b)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for idx, line in enumerate(lines_a[i1:i2]):
+                diff_result.append({"type": "context", "line": line.rstrip("\n"), "line_number": i1 + idx + 1})
+        elif tag == "delete":
+            for idx, line in enumerate(lines_a[i1:i2]):
+                diff_result.append({"type": "remove", "line": line.rstrip("\n"), "line_number": i1 + idx + 1})
+        elif tag == "insert":
+            for idx, line in enumerate(lines_b[j1:j2]):
+                diff_result.append({"type": "add", "line": line.rstrip("\n"), "line_number": j1 + idx + 1})
+        elif tag == "replace":
+            for idx, line in enumerate(lines_a[i1:i2]):
+                diff_result.append({"type": "remove", "line": line.rstrip("\n"), "line_number": i1 + idx + 1})
+            for idx, line in enumerate(lines_b[j1:j2]):
+                diff_result.append({"type": "add", "line": line.rstrip("\n"), "line_number": j1 + idx + 1})
+    return diff_result

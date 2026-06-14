@@ -56,6 +56,23 @@
       </div>
     </div>
 
+    <!-- Recommendations Sidebar -->
+    <div class="rec-sidebar" v-if="currentConvId && recommendedDocs.length">
+      <div class="rec-header">
+        <span>相关文档推荐</span>
+        <el-button size="small" text @click="recommendedDocs = []">收起</el-button>
+      </div>
+      <div class="rec-list">
+        <div v-for="rec in recommendedDocs" :key="rec.document_id" class="rec-item">
+          <div class="rec-title">{{ rec.title }}</div>
+          <div class="rec-meta">
+            <span>{{ rec.kb_name }}</span>
+            <span>{{ (rec.similarity * 100).toFixed(0) }}%</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Correction Dialog -->
     <el-dialog v-model="correctionVisible" title="人工纠错">
       <el-input v-model="correctionText" type="textarea" :rows="4" placeholder="请输入正确答案" />
@@ -78,7 +95,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, nextTick, watch } from 'vue'
 import api from '../api'
 import { ElMessage } from 'element-plus'
 import MarkdownIt from 'markdown-it'
@@ -108,6 +125,9 @@ const feedbackRating = ref(3)
 const feedbackComment = ref('')
 const feedbackMsgId = ref('')
 
+// Recommendations
+const recommendedDocs = ref<any[]>([])
+
 function renderMarkdown(text: string) {
   return md.render(text)
 }
@@ -121,6 +141,23 @@ onMounted(async () => {
   }
 })
 
+watch(currentConvId, async (newId) => {
+  if (newId) {
+    await loadRecommendations(newId)
+  } else {
+    recommendedDocs.value = []
+  }
+})
+
+async function loadRecommendations(convId: string) {
+  try {
+    const res = await api.get('/chat/recommendations', { params: { conversation_id: convId } })
+    recommendedDocs.value = res.data
+  } catch {
+    recommendedDocs.value = []
+  }
+}
+
 async function loadConversations() {
   const res = await api.get('/chat/conversations')
   conversations.value = res.data.filter((c: any) => c.kb_id === selectedKb.value)
@@ -129,6 +166,7 @@ async function loadConversations() {
 function newConversation() {
   currentConvId.value = null
   messages.value = []
+  recommendedDocs.value = []
 }
 
 async function selectConversation(id: string) {
@@ -359,4 +397,31 @@ async function submitFeedback() {
   padding-top: 12px;
 }
 .input-area .el-input { flex: 1; }
+
+/* Recommendations sidebar */
+.rec-sidebar {
+  width: 220px;
+  background: #fff;
+  border-radius: 8px;
+  padding: 12px;
+  overflow-y: auto;
+}
+.rec-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.rec-list { display: flex; flex-direction: column; gap: 8px; }
+.rec-item {
+  padding: 8px 10px;
+  background: #f9f9f9;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.rec-item:hover { background: #e6f7ff; }
+.rec-title { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
+.rec-meta { display: flex; justify-content: space-between; font-size: 11px; color: #909399; }
 </style>
