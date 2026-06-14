@@ -12,43 +12,41 @@ from app.database import async_session_factory
 
 
 async def process_document(document_id: UUID):
+    # Phase 1: acquire row lock and mark processing
     async with async_session_factory() as db:
-        # Acquire row lock — skip if another task already holds it
         result = await db.execute(
             select(Document)
             .where(Document.id == document_id)
-            .with_for_update(skip_locked=True)
+            .with_for_update(nowait=False)
         )
         doc = result.scalar_one_or_none()
-        if not doc or doc.status == DocStatus.processing:
+        if not doc:
+            return
+        if doc.status == DocStatus.processing:
             return
 
         doc.status = DocStatus.processing
+        # Delete old vectors NOW while we hold the lock — guarantees no stale reads
+        await db.execute(
+            delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
+        )
         await db.commit()
 
-    # Processing outside the lock session to avoid long-held locks
+    # Phase 2: parse, chunk, embed (no lock held — heavy I/O)
     try:
         sections = parse_document(doc.file_path, doc.file_type)
-        chunks = smart_chunk(sections)
+        if not sections:
+            raise ValueError("Document parsed to empty content")
 
+        chunks = smart_chunk(sections)
         if not chunks:
-            async with async_session_factory() as db:
-                await db.execute(
-                    update(Document)
-                    .where(Document.id == document_id)
-                    .values(status=DocStatus.error)
-                )
-                await db.commit()
-            return
+            raise ValueError("Chunking produced no output")
 
         texts = [c["content"] for c in chunks]
         embeddings = await generate_embeddings(texts)
 
-        # Atomic swap: bulk delete old chunks + insert new in one transaction
+        # Phase 3: insert new vectors + mark ready (single transaction)
         async with async_session_factory() as db:
-            await db.execute(
-                delete(DocumentChunk).where(DocumentChunk.document_id == document_id)
-            )
             db.add_all([
                 DocumentChunk(
                     document_id=document_id,
@@ -67,11 +65,9 @@ async def process_document(document_id: UUID):
             )
             await db.commit()
 
-        # Invalidate search cache after successful re-index
         query_cache.clear()
 
     except Exception:
-        # Use a fresh session to mark error — avoids poisoned-session issues
         async with async_session_factory() as err_db:
             await err_db.execute(
                 update(Document)

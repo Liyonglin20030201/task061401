@@ -19,7 +19,10 @@ from app.services.document_service import save_uploaded_file, compute_file_hash,
 from app.services.chat_service import check_kb_access
 from app.tasks.indexing import process_document
 from app.core.dependencies import get_current_user, require_role
-from app.core.exceptions import NotFoundException, ForbiddenException
+from app.core.exceptions import NotFoundException, ForbiddenException, AppException
+from app.config import get_settings
+
+_settings = get_settings()
 
 router = APIRouter(prefix="/api", tags=["documents"])
 
@@ -161,6 +164,16 @@ async def upload_document(
         raise ForbiddenException("Unsupported file type. Use PDF, DOCX, or MD.")
 
     content = await file.read()
+
+    # Guard: empty file
+    if len(content) == 0:
+        raise AppException("Uploaded file is empty")
+
+    # Guard: oversized file
+    max_bytes = _settings.max_upload_size_mb * 1024 * 1024
+    if len(content) > max_bytes:
+        raise AppException(f"File exceeds maximum size of {_settings.max_upload_size_mb} MB")
+
     file_path = await save_uploaded_file(content, file.filename, kb_id)
     file_hash = compute_file_hash(file_path)
 
@@ -244,6 +257,8 @@ async def list_chunks(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    doc = await get_document_or_404(doc_id, db)
+    await check_kb_access(user, doc.kb_id, db)
     result = await db.execute(
         select(DocumentChunk)
         .where(DocumentChunk.document_id == doc_id)

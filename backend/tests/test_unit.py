@@ -148,3 +148,13 @@ class TestTTLCache:
         cache.clear()
         assert cache.get("x") is None
         assert cache.get("y") is None
+
+    def test_jitter_produces_varying_ttls(self):
+        from app.core.cache import TTLCache
+        cache = TTLCache(maxsize=10, ttl=100, jitter=0.3)
+        ttls = [cache._effective_ttl() for _ in range(20)]
+        # With 30% jitter on 100s, range is [70, 130]
+        assert min(ttls) >= 70
+        assert max(ttls) <= 130
+        # Should not all be the same (vanishingly unlikely with true random)
+        assert len(set(round(t, 1) for t in ttls)) > 1

@@ -101,7 +101,10 @@ def parse_document(file_path: str, file_type: str) -> list[dict]:
     parser = parsers.get(file_type)
     if not parser:
         raise ValueError(f"Unsupported file type: {file_type}")
-    return parser(file_path)
+    sections = parser(file_path)
+    if not sections:
+        raise ValueError(f"Document is empty or could not be parsed: {file_path}")
+    return sections
 
 
 async def save_uploaded_file(file_content: bytes, filename: str, kb_id: UUID) -> str:
